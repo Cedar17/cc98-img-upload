@@ -13,6 +13,8 @@ uv run cc98_img_upload.py /path/to/post.md > /path/to/post.cc98.md
 
 按提示输入 CC98 用户名和密码。图片相对路径以 Markdown 所在目录为准。
 
+上传遇到 HTTP 403 时等待 1 秒，仅重试当前图片一次；再次失败则退出。
+
 正文写入 stdout，提示、进度和错误写入 stderr。输入和输出使用不同文件。
 
 ## 测试

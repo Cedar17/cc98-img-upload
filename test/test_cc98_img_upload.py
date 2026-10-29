@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import requests
 
@@ -47,6 +47,7 @@ class ScriptTests(unittest.TestCase):
         self.session.post.side_effect = AssertionError("Unexpected network request")
         self.password = self.enterContext(patch.object(app.getpass, "getpass",
                                                      return_value="private-password"))
+        self.sleep = self.enterContext(patch.object(app.time, "sleep"))
 
     def image(self, name="a.png"):
         path = self.notes / name
@@ -264,8 +265,52 @@ class ScriptTests(unittest.TestCase):
         self.image()
         for status in [400, 401, 403, 500, 302]:
             with self.subTest(status=status):
+                self.session.post.reset_mock()
                 self.session.post.side_effect = [response({"error": "private-password"}, status)]
                 self.assert_failed(self.invoke("![图](a.png)"), f"HTTP {status}")
+                self.assertEqual(self.session.post.call_count, 1)
+                self.sleep.assert_not_called()
+
+    def test_upload_403_retries_current_image_from_start(self):
+        for name in ["a.png", "b.png", "c.png"]:
+            self.image(name).write_bytes(name.encode())
+        replies = iter([response({"access_token": "private-token"}),
+                        response(["https://file.cc98.org/a.png"]), response(status=403),
+                        response(["https://file.cc98.org/b.png"]),
+                        response(["https://file.cc98.org/c.png"])])
+        uploads = []
+
+        def post(url, **kwargs):
+            if url == app.UPLOAD_URL:
+                filename, handle, _ = kwargs["files"]["files"]
+                uploads.append((filename, handle, handle.read()))
+            return next(replies)
+
+        self.session.post.side_effect = post
+        code, output, errors = self.invoke("![a](a.png) ![b](b.png) ![c](c.png) ![b2](b.png)")
+        self.assertEqual((code, output), (0, (
+            "![a](https://file.cc98.org/a.png) ![b](https://file.cc98.org/b.png) "
+            "![c](https://file.cc98.org/c.png) ![b2](https://file.cc98.org/b.png)"
+        ).encode()))
+        self.assertEqual([(name, data) for name, _, data in uploads],
+                         [("a.png", b"a.png"), ("b.png", b"b.png"),
+                          ("b.png", b"b.png"), ("c.png", b"c.png")])
+        self.assertIsNot(uploads[1][1], uploads[2][1])
+        self.assertTrue(all(handle.closed for _, handle, _ in uploads))
+        self.assertEqual(self.session.post.call_count, 5)
+        self.sleep.assert_called_once_with(1)
+        self.assertIn("HTTP 403，1 秒后重试一次", errors)
+
+    def test_upload_403_retry_budget_is_per_image(self):
+        self.image("a.png")
+        self.image("b.png")
+        self.session.post.side_effect = [response({"access_token": "private-token"}),
+                                         response(status=403), response(["https://file.cc98.org/a.png"]),
+                                         response(status=403), response(["https://file.cc98.org/b.png"])]
+        self.assertEqual(self.invoke("![a](a.png) ![b](b.png)")[:2],
+                         (0, b"![a](https://file.cc98.org/a.png) ![b](https://file.cc98.org/b.png)"))
+        self.assertEqual(self.session.post.call_count, 5)
+        self.assertEqual(self.sleep.call_args_list, [call(1), call(1)])
 
     def test_login_requires_nonempty_string_token(self):
         self.image()
@@ -297,17 +342,26 @@ class ScriptTests(unittest.TestCase):
                     result = self.invoke("![图](a.png)")
                     self.assert_failed(result, "超时" if isinstance(exception, requests.Timeout) else "网络请求失败")
                     self.assertEqual(self.session.post.call_count, 2 if upload else 1)
+                    self.sleep.assert_not_called()
 
     def test_upload_failure_stops_remaining_images_and_output(self):
         for name in ["a.png", "b.png", "c.png"]:
             self.image(name)
-        for failure in [response(status=401), response(status=403), response(status=413)]:
-            with self.subTest(status=failure.status_code):
+        for status in [400, 401, 403, 413, 429, 500, 302]:
+            with self.subTest(status=status):
                 self.session.post.reset_mock()
+                self.sleep.reset_mock()
                 self.session.post.side_effect = [response({"access_token": "private-token"}),
-                                                 response(["https://file.cc98.org/a.png"]), failure]
-                self.assert_failed(self.invoke("![a](a.png) ![b](b.png) ![c](c.png)"), "b.png")
-                self.assertEqual(self.session.post.call_count, 3)
+                                                 response(["https://file.cc98.org/a.png"]),
+                                                 response(status=status), response(status=status)]
+                result = self.invoke("![a](a.png) ![b](b.png) ![c](c.png)")
+                self.assert_failed(result, f"HTTP {status}")
+                self.assertIn("b.png", result[2])
+                self.assertEqual(self.session.post.call_count, 4 if status == 403 else 3)
+                if status == 403:
+                    self.sleep.assert_called_once_with(1)
+                else:
+                    self.sleep.assert_not_called()
 
     def test_malformed_upload_responses(self):
         self.image()
@@ -340,6 +394,17 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual((code, output), (130, b""))
         self.assertIn("已取消", errors)
         self.assertEqual(self.session.post.call_count, 2)
+
+    def test_ctrl_c_during_upload_retry_wait_stops_without_output(self):
+        self.image("a.png")
+        self.image("b.png")
+        self.session.post.side_effect = [response({"access_token": "private-token"}), response(status=403)]
+        self.sleep.side_effect = KeyboardInterrupt
+        code, output, errors = self.invoke("![a](a.png) ![b](b.png)")
+        self.assertEqual((code, output), (130, b""))
+        self.assertIn("已取消", errors)
+        self.assertEqual(self.session.post.call_count, 2)
+        self.sleep.assert_called_once_with(1)
 
     def test_cli_bytes_and_noninteractive_error(self):
         source = '\ufeff# 标题\r\n\r\n![远程](https://example.com/a.png)\r\n'

@@ -15,6 +15,7 @@
 代码、注释、外链、data URI、引用式图片、Obsidian 嵌入和 HTML 保持原样。
 
 需要上传时从交互终端输入账号密码，密码隐藏，凭据不落盘。
+上传遇到 HTTP 403 时等待 1 秒，仅重试当前图片一次。
 任一检查或上传失败则不输出正文；已上传的远端文件无法撤回，重跑可能重传。
 请先连接校园网/RVPN。文件类型和大小由 CC98 服务端检查。
 输出请使用不同文件：shell 的 > 会在脚本运行前创建或截断目标文件。
@@ -29,6 +30,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.parse import quote, unquote, urlsplit
 import warnings
 
@@ -43,6 +45,12 @@ UPLOAD_URL = "https://api.cc98.org/file"
 # CC98 public OpenID client parameters.
 CLIENT_ID = "9a1fd200-8687-44b1-4c20-08d50a96e5cd"
 CLIENT_SECRET = "8b53f727-08e2-4509-8857-e34bf92b27f2"
+
+
+class HttpStatusError(ValueError):
+    def __init__(self, stage: str, status_code: int):
+        super().__init__(f"{stage}：HTTP {status_code}")
+        self.status_code = status_code
 
 
 def collect_images(source: str, base: Path) -> list[tuple[int, int, Path]]:
@@ -117,7 +125,7 @@ def post_json(session, url: str, stage: str, **kwargs):
     except requests.RequestException:
         raise ValueError(f"{stage}：网络请求失败，请检查校园网/RVPN、代理和证书") from None
     if not 200 <= response.status_code < 300:
-        raise ValueError(f"{stage}：HTTP {response.status_code}")
+        raise HttpStatusError(stage, response.status_code)
     try:
         return response.json()
     except ValueError:
@@ -154,14 +162,21 @@ def login(session) -> str:
 def upload(session, token: str, path: Path) -> str:
     stage = f"上传失败 {str(path)!r}"
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    try:
-        with path.open("rb") as image:
-            result = post_json(session, UPLOAD_URL, stage,
-                               headers={"Authorization": f"Bearer {token}"},
-                               data={"contentType": "multipart/form-data"},
-                               files={"files": (path.name, image, mime)})
-    except OSError as error:
-        raise ValueError(f"{stage}：读取文件失败（{error.strerror}）") from None
+    for attempt in range(2):
+        try:
+            with path.open("rb") as image:
+                result = post_json(session, UPLOAD_URL, stage,
+                                   headers={"Authorization": f"Bearer {token}"},
+                                   data={"contentType": "multipart/form-data"},
+                                   files={"files": (path.name, image, mime)})
+            break
+        except HttpStatusError as error:
+            if error.status_code != 403 or attempt:
+                raise
+            print(f"上传遇到 HTTP 403，1 秒后重试一次 {str(path)!r}", file=sys.stderr)
+            time.sleep(1)
+        except OSError as error:
+            raise ValueError(f"{stage}：读取文件失败（{error.strerror}）") from None
     url = result[0] if isinstance(result, list) and result else (
         result.get("url") if isinstance(result, dict) else None
     )
