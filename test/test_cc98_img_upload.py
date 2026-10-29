@@ -9,6 +9,7 @@
 
 import contextlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -353,6 +354,20 @@ class ScriptTests(unittest.TestCase):
         result = subprocess.run(command, input=b"", capture_output=True, cwd=elsewhere)
         self.assertEqual((result.returncode, result.stdout), (1, b""))
         self.assertIn("需要交互终端", result.stderr.decode())
+
+    def test_cli_closed_pipe_exits_cleanly(self):
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            for count in (1, 10000):
+                with self.subTest(lines=count):
+                    self.note.write_text("正文\n" * count, encoding="utf-8")
+                    command = [sys.executable, str(Path(app.__file__).resolve()), str(self.note)]
+                    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=write_fd,
+                                            stderr=subprocess.PIPE, timeout=10)
+                    self.assertEqual((result.returncode, result.stderr), (1, b""))
+        finally:
+            os.close(write_fd)
 
     def test_help_and_argument_errors(self):
         code, output, _ = self.invoke(argv=["--help"])

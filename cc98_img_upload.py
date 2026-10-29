@@ -25,6 +25,7 @@
 import argparse
 import getpass
 import mimetypes
+import os
 from pathlib import Path
 import re
 import sys
@@ -214,6 +215,11 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\n已取消。", file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        # Avoid flushing the broken pipe again during interpreter shutdown.
+        with open(os.devnull, "wb") as sink:
+            os.dup2(sink.fileno(), sys.stdout.fileno())
+        return 1
     except (OSError, ValueError) as error:
         print(f"错误：{error}", file=sys.stderr)
         return 1
