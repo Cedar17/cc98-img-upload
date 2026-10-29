@@ -4,7 +4,7 @@
 
 ## 使用
 
-需要 uv、Python ≥ 3.12，以及能访问 CC98 的网络环境。
+需要 uv、Python ≥ 3.12，以及能访问 CC98 的网络环境。依赖由 uv 自动安装。
 
 ```sh
 uv run cc98_img_upload.py --help  # 查看帮助，也可用 -h
@@ -20,3 +20,5 @@ uv run cc98_img_upload.py /path/to/post.md > /path/to/post.cc98.md
 ```sh
 uv run test/test_cc98_img_upload.py -v
 ```
+
+本项目采用 [Apache-2.0](LICENSE) 许可证。

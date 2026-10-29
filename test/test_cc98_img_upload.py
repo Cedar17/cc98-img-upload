@@ -1,3 +1,6 @@
+# Copyright 2026 Cedar17
+# SPDX-License-Identifier: Apache-2.0
+
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["requests>=2.32.4,<3", "markdown-it-py>=4,<5"]
