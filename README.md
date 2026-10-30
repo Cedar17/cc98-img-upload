@@ -1,5 +1,7 @@
 # cc98-img-upload
 
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white) ![uv](https://img.shields.io/badge/uv-supported-6A5ACD?style=flat-square) ![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)
+
 将 Markdown 中的本地内联图片上传到 CC98，输出替换后的 Markdown。
 
 ## 使用
